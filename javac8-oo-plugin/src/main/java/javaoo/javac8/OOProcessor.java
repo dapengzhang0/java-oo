@@ -35,7 +35,7 @@ public class OOProcessor extends AbstractProcessor {
         JavacProcessingEnvironment pe = (JavacProcessingEnvironment) processingEnv;
         JavaCompiler compiler = JavaCompiler.instance(pe.getContext());
         try {
-            ClassLoader pclassloader = (ClassLoader) get(pe, "processorClassLoader");
+            ClassLoader pclassloader = (ClassLoader) get(pe, JavacProcessingEnvironment.class, "processorClassLoader");
             if (pclassloader != null && (!pclassloader.getClass().equals(ClassLoader.class)))
                 // do not let compiler to close our classloader. we need it later.
                 set(pe, JavacProcessingEnvironment.class, "processorClassLoader", new ClassLoader(pclassloader) {});
@@ -45,7 +45,7 @@ public class OOProcessor extends AbstractProcessor {
                 return;
             }
             processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, "Injecting OO to javac8");
-            final MultiTaskListener taskListener = (MultiTaskListener) get(compiler, "taskListener");
+            final MultiTaskListener taskListener = (MultiTaskListener) get(compiler, JavaCompiler.class, "taskListener");
             taskListener.add(new WaitAnalyzeTaskListener(compiler, pclassloader));
         } catch (Exception e) {
             sneakyThrow(e);
@@ -78,10 +78,10 @@ public class OOProcessor extends AbstractProcessor {
 
     static void patch(JavaCompiler compiler, ClassLoader pcl) {
         try {
-            JavaCompiler delCompiler = (JavaCompiler) get(compiler, "delegateCompiler");
+            JavaCompiler delCompiler = (JavaCompiler) get(compiler, JavaCompiler.class, "delegateCompiler");
             if (delCompiler != null)
                 compiler = delCompiler; // javac has delegateCompiler. netbeans hasn't
-            Context context = (Context) get(compiler, "context");
+            Context context = (Context) get(compiler, JavaCompiler.class, "context");
             Attr attr = Attr.instance(context);
             if (attr instanceof OOAttr)
                 return;
@@ -126,8 +126,8 @@ public class OOProcessor extends AbstractProcessor {
     static Object getInstance(Class<?> clas, Context context) throws ReflectiveOperationException {
         return clas.getDeclaredMethod("instance", Context.class).invoke(null, context);
     }
-    static Object get(Object obj, String field) throws ReflectiveOperationException {
-        Field f = obj.getClass().getDeclaredField(field);
+    static Object get(Object obj, Class<?> clazz, String field) throws ReflectiveOperationException {
+        Field f = clazz.getDeclaredField(field);
         f.setAccessible(true);
         return f.get(obj);
     }
