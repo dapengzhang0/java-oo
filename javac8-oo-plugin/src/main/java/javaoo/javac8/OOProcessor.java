@@ -35,18 +35,9 @@ public class OOProcessor extends AbstractProcessor {
         JavacProcessingEnvironment pe = (JavacProcessingEnvironment) processingEnv;
         JavaCompiler compiler = JavaCompiler.instance(pe.getContext());
         try {
-            ClassLoader pclassloader = (ClassLoader) get(pe, JavacProcessingEnvironment.class, "processorClassLoader");
-            if (pclassloader != null && (!pclassloader.getClass().equals(ClassLoader.class)))
-                // do not let compiler to close our classloader. we need it later.
-                set(pe, JavacProcessingEnvironment.class, "processorClassLoader", new ClassLoader(pclassloader) {});
-            if (pclassloader == null) { // netbeans
-                processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, "Injecting OO to netbeans");
-                patch(compiler, OOProcessor.class.getClassLoader());
-                return;
-            }
             processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, "Injecting OO to javac8");
-            final MultiTaskListener taskListener = (MultiTaskListener) get(compiler, JavaCompiler.class, "taskListener");
-            taskListener.add(new WaitAnalyzeTaskListener(compiler, pclassloader));
+            MultiTaskListener taskListener = (MultiTaskListener) get(compiler, "taskListener");
+            taskListener.add(new WaitAnalyzeTaskListener(compiler));
         } catch (Exception e) {
             sneakyThrow(e);
         }
@@ -57,18 +48,16 @@ public class OOProcessor extends AbstractProcessor {
         return false;
     }
 
-    static class WaitAnalyzeTaskListener implements TaskListener {
-        JavaCompiler compiler;
-        ClassLoader pclassloader;
+    private static final class WaitAnalyzeTaskListener implements TaskListener {
+        final JavaCompiler compiler;
         boolean done = false;
-        public WaitAnalyzeTaskListener(JavaCompiler compiler, ClassLoader pclassloader) {
+        WaitAnalyzeTaskListener(JavaCompiler compiler) {
             this.compiler = compiler;
-            this.pclassloader = pclassloader;
         }
         @Override
         public void started(TaskEvent e) {
             if (!done && e.getKind() == TaskEvent.Kind.ANALYZE) {
-                patch(compiler, pclassloader);
+                patch(compiler);
                 done = true;
             }
         }
@@ -76,24 +65,24 @@ public class OOProcessor extends AbstractProcessor {
         public void finished(TaskEvent e) {}
     }
 
-    static void patch(JavaCompiler compiler, ClassLoader pcl) {
+    private static void patch(JavaCompiler compiler) {
         try {
-            JavaCompiler delCompiler = (JavaCompiler) get(compiler, JavaCompiler.class, "delegateCompiler");
+            JavaCompiler delCompiler = (JavaCompiler) get(compiler, "delegateCompiler");
             if (delCompiler != null)
                 compiler = delCompiler; // javac has delegateCompiler. netbeans hasn't
-            Context context = (Context) get(compiler, JavaCompiler.class, "context");
+            Context context = (Context) get(compiler, "context");
             Attr attr = Attr.instance(context);
             if (attr instanceof OOAttr)
                 return;
             ClassLoader destcl = attr.getClass().getClassLoader();
 
             // hack: load classes to the same classloader so they will be able to use and override default accessor members
-            Class<?> attrClass = reloadClass("com.sun.tools.javac.comp.OOAttr", pcl, destcl);
-            Class<?> resolveClass = reloadClass("com.sun.tools.javac.comp.OOResolve", pcl, destcl);
-            Class<?> transTypesClass = reloadClass("com.sun.tools.javac.comp.OOTransTypes", pcl, destcl);
-            reloadClass("javaoo.OOMethods", pcl, destcl);
-            reloadClass("javaoo.OOMethods$1", pcl, destcl);
-            reloadClass("javaoo.OOMethods$2", pcl, destcl);
+            Class<?> attrClass = reloadClass(OOAttr.class.getName(), destcl);
+            Class<?> resolveClass = reloadClass(OOResolve.class.getName(), destcl);
+            Class<?> transTypesClass = reloadClass(OOTransTypes.class.getName(), destcl);
+            reloadClass(javaoo.OOMethods.class.getName(), destcl);
+            reloadClass("javaoo.OOMethods$1", destcl);
+            reloadClass("javaoo.OOMethods$2", destcl);
 
             getInstance(resolveClass, context);
             attr = (Attr) getInstance(attrClass, context);
@@ -106,37 +95,38 @@ public class OOProcessor extends AbstractProcessor {
             sneakyThrow(e);
         }
     }
-    @SuppressWarnings("unchecked")
+
     /** add class claz to outClassLoader */
-    static <T> Class<T> reloadClass(final String claz, ClassLoader incl, ClassLoader outcl) throws Exception {
+    private static Class<?> reloadClass(final String claz, ClassLoader outcl) throws Exception {
         try { // already loaded?
-            return (Class<T>) outcl.loadClass(claz);
+            return outcl.loadClass(claz);
         } catch (ClassNotFoundException e) {}
         String path = claz.replace('.', '/') + ".class";
-        InputStream is = incl.getResourceAsStream(path);
+        InputStream is = OOProcessor.class.getClassLoader().getResourceAsStream(path);
         byte[] bytes = new byte[is.available()];
         is.read(bytes);
         Method m = ClassLoader.class.getDeclaredMethod("defineClass", new Class[] {
                 String.class, byte[].class, int.class, int.class });
         m.setAccessible(true);
-        return (Class<T>) m.invoke(outcl, claz, bytes, 0, bytes.length);
+        return (Class<?>) m.invoke(outcl, claz, bytes, 0, bytes.length);
     }
 
     // reflection stuff
-    static Object getInstance(Class<?> clas, Context context) throws ReflectiveOperationException {
+    private static Object getInstance(Class<?> clas, Context context) throws ReflectiveOperationException {
         return clas.getDeclaredMethod("instance", Context.class).invoke(null, context);
     }
-    static Object get(Object obj, Class<?> clazz, String field) throws ReflectiveOperationException {
-        Field f = clazz.getDeclaredField(field);
+
+    private static Object get(Object obj, String field) throws ReflectiveOperationException {
+        Field f = JavaCompiler.class.getDeclaredField(field);
         f.setAccessible(true);
         return f.get(obj);
     }
-    static void set(Object obj, Class clas, String field, Object val) throws ReflectiveOperationException {
+    private static void set(Object obj, Class clas, String field, Object val) throws ReflectiveOperationException {
         Field f = clas.getDeclaredField(field);
         f.setAccessible(true);
         f.set(obj, val);
     }
-    public static void sneakyThrow(Throwable ex) {
+    private static void sneakyThrow(Throwable ex) {
         OOProcessor.<RuntimeException>sneakyThrowInner(ex);
     }
     private static <T extends Throwable> T sneakyThrowInner(Throwable ex) throws T {
