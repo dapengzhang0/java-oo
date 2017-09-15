@@ -14,7 +14,11 @@ import com.sun.source.tree.Tree;
 import com.sun.tools.javac.code.Kinds;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Type;
+import com.sun.tools.javac.jvm.ByteCodes;
 import com.sun.tools.javac.tree.JCTree;
+import com.sun.tools.javac.tree.JCTree.JCBinary;
+import com.sun.tools.javac.tree.JCTree.JCMethodInvocation;
+import com.sun.tools.javac.tree.JCTree.JCUnary;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.List;
 import javaoo.OOMethods;
@@ -150,5 +154,72 @@ public class OOAttr extends Attr {
         }
         if ((pkind() & VAR) == 0) owntype = types.capture(owntype);
         result = check(tree, owntype, VAR, resultInfo);
+    }
+
+    @Override
+    public void visitUnary(JCUnary tree) {
+        // Attribute arguments.
+        Type argtype = (tree.getTag().isIncOrDecUnaryOp())
+            ? attribTree(tree.arg, env, varInfo)
+            : chk.checkNonVoid(tree.arg.pos(), attribExpr(tree.arg, env));
+        // Find operator.
+        Symbol operator = rs.resolveUnaryOperator(tree.pos(), tree.getTag(), env, argtype);
+        if (operator instanceof Symbol.OperatorSymbol) {
+            // similar to #visitBinary
+            Symbol.OperatorSymbol os = (Symbol.OperatorSymbol) operator;
+            if (os.opcode == ByteCodes.error+1) {
+                Symbol.MethodSymbol ms = (Symbol.MethodSymbol) os.owner;
+                JCTree.JCFieldAccess meth = make.Select(tree.arg, ms.name);
+                meth.type = ms.type;
+                tree.type = ((Type.MethodType)ms.type).restype;
+                meth.sym = ms;
+                JCMethodInvocation result = make.Apply(null, meth, List.<JCTree.JCExpression>nil())
+                    .setType(tree.type);
+                visitApply(result);
+                translateMap.put(tree, result);
+                return;
+            }
+        }
+        super.visitUnary(tree);
+    }
+
+    @Override
+    public void visitBinary(JCBinary tree) {
+        Type left = chk.checkNonVoid(tree.lhs.pos(), attribExpr(tree.lhs, env));
+        Type right = chk.checkNonVoid(tree.lhs.pos(), attribExpr(tree.rhs, env));
+        // Find operator.
+        Symbol operator = rs.resolveBinaryOperator(tree.pos(), tree.getTag(), env, left, right);
+
+        if (operator instanceof Symbol.OperatorSymbol) {
+            Symbol.OperatorSymbol os = (Symbol.OperatorSymbol) operator;
+            if (os.opcode == ByteCodes.error+1) { // if operator overloading?
+                Symbol.MethodSymbol ms = (Symbol.MethodSymbol) os.owner;
+                boolean isRev = ms.name.toString().endsWith(OOMethods.revSuffix); // reverse hs if methodRev
+                JCTree.JCExpression lhs = isRev ? tree.rhs : tree.lhs;
+                JCTree.JCExpression rhs = isRev ? tree.lhs : tree.rhs;
+                // construct method invocation ast
+                JCTree.JCFieldAccess meth = make.Select(lhs, ms.name);
+                meth.type = ms.type;
+                tree.type = ((Type.MethodType)ms.type).restype;
+                meth.sym = ms;
+                if (ms.name.contentEquals("compareTo")) {
+                    JCMethodInvocation result = make.Apply(null, meth, List.of(rhs))
+                        .setType( ((Type.MethodType)ms.type).restype ); // tree.type may be != ms.type.restype. see below
+                    JCTree.JCLiteral zero = make.Literal(0);
+                    JCTree.JCBinary r = make.Binary(tree.getTag(), result, zero);
+                    r.type = syms.booleanType;
+                    r.operator = rs.resolveBinaryOperator(tree, tree.getTag(), env, result.type, zero.type);
+                    visitBinary(r);
+                    translateMap.put(tree, r);
+                } else {
+                    JCMethodInvocation result = make.Apply(null, meth, List.of(rhs))
+                        .setType(tree.type); // tree.type may be != ms.type.restype.
+                    visitApply(result);
+                    translateMap.put(tree, result);
+                }
+                return;
+            }
+        }
+        super.visitBinary(tree);
     }
 }
